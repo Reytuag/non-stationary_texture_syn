@@ -52,6 +52,9 @@ class HalfGanStyleModel(BaseModel):
             self.netD = networks.define_D(opt.output_nc, opt.ndf,
                                           opt.which_model_netD,
                                           opt.n_layers_D, opt.norm, use_sigmoid, self.gpu_ids)
+            self.netD2=networks.define_D(opt.output_nc, opt.ndf,
+                                          opt.which_model_netD,
+                                          opt.n_layers_D+2, opt.norm, use_sigmoid, self.gpu_ids)
         if not self.isTrain or opt.continue_train:
             self.load_network(self.netG, 'G', opt.which_epoch)
             if self.isTrain:
@@ -69,11 +72,14 @@ class HalfGanStyleModel(BaseModel):
                                                 lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(),
                                                 lr=opt.lr, betas=(opt.beta1, 0.999))
+            self.optimizer_D2 = torch.optim.Adam(self.netD2.parameters(),
+                                                lr=opt.lr, betas=(opt.beta1, 0.999))
 
         print('---------- Networks initialized -------------')
         networks.print_network(self.netG)
         if self.isTrain:
             networks.print_network(self.netD)
+            networks.print_network(self.netD2)
         print('-----------------------------------------------')
 
     def set_input(self, input):
@@ -108,14 +114,20 @@ class HalfGanStyleModel(BaseModel):
         # fake_AB = self.fake_AB_pool.query(torch.cat((self.real_B, self.fake_B), 1))
         self.pred_fake = self.netD.forward(fake_AB.detach())
         self.loss_D_fake = self.criterionGAN(self.pred_fake, False)
+        
+        self.pred_fake2 = self.netD2.forward(fake_AB.detach())
+        self.loss_D2_fake = self.criterionGAN(self.pred_fake2, False)
 
         # Real
         real_AB = self.real_B.clone()
         self.pred_real = self.netD.forward(real_AB)
         self.loss_D_real = self.criterionGAN(self.pred_real, True)
+        
+        self.pred_real2 = self.netD2.forward(real_AB)
+        self.loss_D2_real = self.criterionGAN(self.pred_real2, True)
 
         # Combined loss
-        self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5
+        self.loss_D = (self.loss_D_fake + self.loss_D_real) * 0.5 +(self.loss_D2_fake + self.loss_D2_real) * 0.5
 
         self.loss_D.backward()
 
@@ -137,12 +149,13 @@ class HalfGanStyleModel(BaseModel):
         # First, G(A) should fake the discriminator
         fake_AB = self.fake_B.clone()
         pred_fake = self.netD.forward(fake_AB)
+        pred_fake2=  self.netD2.forward(fake_AB)
         self.loss_G_GAN = self.criterionGAN(pred_fake, True)
-
+        self.loss_G_GAN2 = self.criterionGAN(pred_fake2, True)
         # Second, G(A) = B
         self.loss_G_L1 = self.criterionL1(self.fake_B, self.real_B) * self.opt.lambda_A
 
-        self.loss_G = self.loss_G_GAN + self.loss_G_L1
+        self.loss_G = (0.7*self.loss_G_GAN+0.3*self.loss_G_GAN2) + self.loss_G_L1
         # self.loss_G = self.loss_G_GAN
 
         self.loss_G.backward()
@@ -151,19 +164,23 @@ class HalfGanStyleModel(BaseModel):
         self.forward()
 
         self.optimizer_D.zero_grad()
+        self.optimizer_D2.zero_grad()
         self.backward_D()
         self.optimizer_D.step()
+        self.optimizer_D2.step()
 
         self.optimizer_G.zero_grad()
         self.backward_G()
         self.optimizer_G.step()
+        
+        
 
     def get_current_errors(self):
         # print(self.pred_real)
         # print(self.pred_fake)
         return OrderedDict([('G_GAN', self.loss_G_GAN.item()),
                             ('G_L1', self.loss_G_L1.item()),
-                            ('D_real', self.loss_D_real.item()),
+                            ('D_real',self.loss_D_real.item()),
                             ('D_fake', self.loss_D_fake.item()),
                             ('Style', self.style_loss_value)
                             ])
@@ -184,6 +201,8 @@ class HalfGanStyleModel(BaseModel):
         for param_group in self.optimizer_D.param_groups:
             param_group['lr'] = lr
         for param_group in self.optimizer_G.param_groups:
+            param_group['lr'] = lr
+        for param_group in self.optimizer_D2.param_groups:
             param_group['lr'] = lr
         print('update learning rate: %f -> %f' % (self.old_lr, lr))
         self.old_lr = lr
